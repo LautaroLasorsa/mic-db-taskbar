@@ -1,12 +1,19 @@
 //! Enumeration of active audio capture endpoints.
 
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::Media::Audio::{
     DEVICE_STATE_ACTIVE, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ};
-use windows::core::{PWSTR, Result};
+use windows::core::{GUID, PWSTR, Result};
 
+/// Endpoint property holding the underlying device instance path, e.g.
+/// `{1}.USB\VID_0D8C&PID_0012&MI_00\...`, or `{1}.BTHHFENUM\...` for a Bluetooth headset.
+const PKEY_ENDPOINT_DEVICE_PATH: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xb3f8fa53_0004_438e_9003_51a46e139bfc),
+    pid: 2,
+};
 const MAX_LABEL_CHARS: usize = 12;
 const NOISE_WORDS: [&str; 5] = ["audio", "device", "technology", "for", "high"];
 
@@ -15,6 +22,11 @@ pub struct DeviceInfo {
     /// Stable endpoint id string (used to reopen the device).
     pub id: String,
     pub friendly_name: String,
+    /// Bluetooth endpoints switch the headset to the low-quality hands-free profile
+    /// while a capture stream is open, so they are skipped by default.
+    pub bluetooth: bool,
+    /// Underlying device interface path (empty if unavailable); shown by `--list`.
+    pub device_path: String,
 }
 
 pub fn enumerator() -> Result<IMMDeviceEnumerator> {
@@ -31,9 +43,13 @@ pub fn active_capture_devices(enumerator: &IMMDeviceEnumerator) -> Result<Vec<De
         let mut devices = Vec::with_capacity(count as usize);
         for index in 0..count {
             let device = collection.Item(index)?;
+            let path = string_property(&device, &PKEY_ENDPOINT_DEVICE_PATH).unwrap_or_default();
             devices.push(DeviceInfo {
                 id: device_id(&device)?,
-                friendly_name: friendly_name(&device).unwrap_or_else(|_| "Mic".to_owned()),
+                friendly_name: string_property(&device, &PKEY_Device_FriendlyName)
+                    .unwrap_or_else(|_| "Mic".to_owned()),
+                device_path: path.clone(),
+                bluetooth: is_bluetooth_path(&path),
             });
         }
         Ok(devices)
@@ -45,13 +61,21 @@ fn device_id(device: &IMMDevice) -> Result<String> {
     unsafe { take_co_string(device.GetId()?) }
 }
 
-fn friendly_name(device: &IMMDevice) -> Result<String> {
-    // SAFETY: property store read of a well-known key.
+fn string_property(device: &IMMDevice, key: &PROPERTYKEY) -> Result<String> {
+    // SAFETY: read-only property store access.
     unsafe {
         let store = device.OpenPropertyStore(STGM_READ)?;
-        let value = store.GetValue(&PKEY_Device_FriendlyName)?;
+        let value = store.GetValue(key)?;
         Ok(value.to_string())
     }
+}
+
+/// True for endpoint device paths of Bluetooth enumerators (classic, hands-free, LE audio).
+fn is_bluetooth_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    ["bthenum", "bthhfenum", "bthleenum", "bthle"]
+        .iter()
+        .any(|bus| lower.contains(bus))
 }
 
 unsafe fn take_co_string(ptr: PWSTR) -> Result<String> {
@@ -100,6 +124,14 @@ fn truncate(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_bluetooth_device_paths() {
+        assert!(is_bluetooth_path(
+            r"{2}.\\?\BTHHFENUM#{0000111e-0000-1000}_VID&0002"
+        ));
+        assert!(!is_bluetooth_path(r"{2}.\\?\usb#vid_0c76&pid_161f&mi_00"));
+    }
 
     #[test]
     fn short_label_prefers_parenthesised_hardware_name() {

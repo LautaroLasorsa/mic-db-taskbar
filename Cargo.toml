@@ -1,6 +1,6 @@
 [package]
 name = "mic-db-taskbar"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Live microphone level (dBFS) for every capture device, shown on the Windows 11 taskbar next to the Widgets button"
