@@ -262,18 +262,24 @@ impl SampleFormat {
     fn for_each_sample(&self, bytes: &[u8], mut f: impl FnMut(f32)) {
         match self.encoding {
             Encoding::Float32 => bytes
-                .chunks_exact(4)
-                .for_each(|b| f(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .for_each(|b| f(f32::from_le_bytes(*b))),
             Encoding::Int16 => bytes
-                .chunks_exact(2)
-                .for_each(|b| f(f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0)),
-            Encoding::Int24 => bytes.chunks_exact(3).for_each(|b| {
-                let value = i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8;
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .for_each(|b| f(f32::from(i16::from_le_bytes(*b)) / 32_768.0)),
+            Encoding::Int24 => bytes.as_chunks::<3>().0.iter().for_each(|&[lo, mid, hi]| {
+                let value = i32::from_le_bytes([0, lo, mid, hi]) >> 8;
                 f(value as f32 / 8_388_608.0)
             }),
-            Encoding::Int32 => bytes.chunks_exact(4).for_each(|b| {
-                f(i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0)
-            }),
+            Encoding::Int32 => bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .for_each(|b| f(i32::from_le_bytes(*b) as f32 / 2_147_483_648.0)),
         }
     }
 }
